@@ -1,0 +1,1514 @@
+---
+title: "Unpacking U.S. Traffic Mortality Disparities"
+subtitle: "DATA 608 — Story 3: Geography, EMS Capacity, Policy, and Infrastructure"
+author: "Muhammad Imran"
+date: "October 8, 2026"
+format:
+  revealjs:
+    theme: simple
+    transition: slide
+    slide-number: true
+    width: 1280
+    height: 720
+    margin: 0.08
+    embed-resources: true
+
+  
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## **Introduction & Contextual Background**
+
+- Welcome to an in-depth exploration of traffic mortality disparities across the United States. This presentation examines the underlying geographic, structural, and behavioral factors that contribute to fatal motor vehicle crashes.
+
+- While overall transportation trends often look at national aggregates, breaking down the data reveals stark disparities across states, urban versus rural divides, and vulnerable road user populations.
+
+------------------------------------------------------------------------
+
+```{r, warning = FALSE, message = FALSE, include=FALSE}
+
+library(tidyverse)
+library(sf)
+library(maps)
+library(viridis)
+library(scales)
+library(janitor)
+
+
+
+# 1. Use the RAW GitHub link to load the CSV directly
+raw_url <- "https://raw.githubusercontent.com/Muhammad-Imran91/608/main/state_master_2024.csv"
+
+```
+
+```{r  Slide 3, warning = FALSE, message = FALSE, fig.width = 11, fig.height = 7, fig.align = "center"}
+
+
+# Disable spherical geometry to prevent intersection errors
+sf::sf_use_s2(FALSE)
+
+# 1. Load data from local file
+#file_path <- "state_master_2024.csv"
+
+
+
+state_data_raw <- read_csv(raw_url, show_col_types = FALSE, locale = locale(encoding = "UTF-8"))
+
+# Assign clean, meaningful names and convert state names to lowercase for matching
+state_data_clean <- state_data_raw %>%
+  rename(
+    state_name         = 1,
+    total_population   = any_of(c("population", "Pop", "POP")),
+    total_deaths       = any_of(c("deaths", "Deaths", "DEATHS")),
+    ems_response_min   = any_of(c("ems_mean_min", "ems", "ems_time")),
+    speeding_invol_pct = any_of(c("speeding_pct", "speeding")),
+    seatbelt_law_type  = any_of(c("belt_law", "seatbelt_law"))
+  ) %>%
+  mutate(
+    state_name = tolower(str_trim(as.character(state_name))), # Ensure lowercase matching
+    fatality_rate_per_100k = (total_deaths / total_population) * 100000
+  )
+
+# 2. Get standard spatial map polygons for US states and explicitly name the geometry column
+us_states_sf <- sf::st_as_sf(maps::map("state", plot = FALSE, fill = TRUE)) %>%
+  rename(geometry = geom) %>%
+  mutate(
+    ID = sub(":.*", "", ID),
+    state_abbr = state.abb[match(ID, tolower(state.name))]
+  )
+
+# Pre-calculate surface points for clean label positioning
+state_centroids_sf <- us_states_sf %>%
+  mutate(geometry = sf::st_point_on_surface(geometry))
+
+# 3. DIRECT JOIN for map fill values
+map_merged <- us_states_sf %>%
+  left_join(state_data_clean, by = c("ID" = "state_name"))
+
+# 4. Create label dataframe by joining surface points with clean data
+state_labels_df <- state_centroids_sf %>%
+  left_join(state_data_clean, by = c("ID" = "state_name")) %>%
+  mutate(
+    label_text = paste0(state_abbr, "\n", sprintf("%.1f", fatality_rate_per_100k))
+  )
+
+# 5. Render the Centered Choropleth Map with Rate Values
+ggplot() +
+  # Draw states with fatality rate per 100k fill
+  geom_sf(data = map_merged, aes(fill = fatality_rate_per_100k), color = "white", size = 0.3) +
+  # Add state abbreviation and rate values text labels at centroids
+  geom_sf_text(
+    data = state_labels_df, 
+    aes(label = label_text), 
+    size = 2.2, 
+    fontface = "bold", 
+    color = "black",
+    check_overlap = TRUE
+  ) +
+  # Apply continuous plasma color scale (darker colors = higher risk/mortality)
+  scale_fill_viridis_c(
+    option = "plasma", 
+    direction = -1, # Dark purple/black for high rates, bright yellow for low rates
+    labels = scales::number_format(accuracy = 0.1),
+    name = "Traffic Fatalities per 100,000 Residents",
+    guide = guide_colorbar(
+      title.position = "top", 
+      title.hjust = 0.5,
+      barwidth = unit(15, "cm"),
+      barheight = unit(0.4, "cm")
+    )
+  ) +
+  labs(
+    title = "U.S. Road Mortality Rate by State (2024)",
+    subtitle = "Population-adjusted motor vehicle crash fatalities per 100,000 residents across the contiguous U.S.",
+    caption = "Source: FARS 2024 State Summary Data"
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5, margin = margin(bottom = 5)),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "#444444", margin = margin(bottom = 15)),
+    plot.caption = element_text(size = 9, color = "#666666", hjust = 0.8, margin = margin(top = 10)),
+    legend.position = "bottom",
+    legend.title = element_text(size = 11, face = "bold", color = "#222222"),
+    legend.text = element_text(size = 10),
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r,Slide 4,  warning = FALSE, message = FALSE, fig.width = 11, fig.height = 7, fig.align = "center"}
+
+
+# Disable spherical geometry to prevent intersection errors
+sf::sf_use_s2(FALSE)
+
+# 1. Dynamically find the rural column from the already loaded dataset
+rural_col_name <- names(state_data_clean)[grepl("rural", names(state_data_clean), ignore.case = TRUE)][1]
+
+rural_data <- state_data_clean %>%
+  select(state_name, rural_share = all_of(rural_col_name))
+
+# 2. Get standard spatial map polygons for US states and pre-calculate centroids safely
+us_states_sf <- sf::st_as_sf(maps::map("state", plot = FALSE, fill = TRUE)) %>%
+  mutate(
+    ID = sub(":.*", "", ID),
+    state_abbr = state.abb[match(ID, tolower(state.name))]
+  )
+
+# Compute centroids on the pure sf object before any joins to avoid geometry loss
+state_centroids_sf <- us_states_sf %>%
+  mutate(geom_cent = sf::st_centroid(geom))
+
+# 3. DIRECT JOIN for the map fill data
+map_merged_rural <- us_states_sf %>%
+  left_join(rural_data, by = c("ID" = "state_name"))
+
+# 4. Create the final label dataframe using the pre-calculated centroids
+state_labels_df <- state_centroids_sf %>%
+  left_join(rural_data, by = c("ID" = "state_name")) %>%
+  mutate(
+    geometry = geom_cent,
+    label_text = paste5 <- paste0(state_abbr, "\n(", round(rural_share, 1), "%)")
+  ) %>%
+  st_as_sf(sf_column_name = "geometry")
+
+# Fix quick typo in label assignment
+state_labels_df$label_text <- paste0(state_labels_df$state_abbr, "\n(", round(state_labels_df$rural_share, 1), "%)")
+
+# 5. Render the High-Quality Choropleth Map with Values and Legends
+ggplot() +
+  # Draw states filled by rural share percentage
+  geom_sf(data = map_merged_rural, aes(fill = rural_share), color = "white", size = 0.4) +
+  # Overlay state names and exact percentage values on each state centroid
+  geom_sf_text(
+    data = state_labels_df, 
+    aes(label = label_text), 
+    size = 2.4, 
+    fontface = "bold", 
+    color = "white" # White text stands out sharply against the plasma fill
+  ) +
+  # Custom color scale (Plasma palette) with clear legend formatting
+  scale_fill_viridis_c(
+    option = "plasma", 
+    direction = -1,
+    labels = function(x) paste0(x, "%"),
+    name = "Share of Fatalities on Rural Roads (%)",
+    guide = guide_colorbar(
+      title.position = "top", 
+      title.hjust = 0.5,
+      barwidth = unit(14, "cm"),
+      barheight = unit(0.4, "cm")
+    )
+  ) +
+  labs(
+    title = "Share of Motor Vehicle Fatalities on Rural Roads by State (2024)",
+    subtitle = "Geographic distribution showing proportion of total traffic deaths on rural roadways",
+    caption = "Source: FARS 2024 State Summary Data"
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5, margin = margin(bottom = 5)),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "#444444", margin = margin(bottom = 15)),
+    plot.caption = element_text(size = 9, color = "#666666", hjust = 0.8, margin = margin(top = 10)),
+    legend.position = "bottom",
+    legend.title = element_text(size = 11, face = "bold", color = "#222222"),
+    legend.text = element_text(size = 10),
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r, slide 5}
+library(tidyverse)
+library(scales)
+library(viridis)
+
+# 1. Load data from local file
+file_path <- "state_master_2024.csv"
+state_data_raw <- read_csv(file_path, show_col_types = FALSE, locale = locale(encoding = "UTF-8"))
+
+# Assign clean, meaningful names using any_of for robust matching across potential column naming conventions
+state_data_clean <- state_data_raw %>%
+  rename(
+    state_name                 = 1,
+    rural_fatality_share       = any_of(c("share_of_crash_deaths_that_occurred_on_rural_roads", "rural_fatality_share", "rural_pct", "rural_deaths_pct")),
+    miles_driven_per_resident  = any_of(c("miles_driven_per_resident_per_year", "miles_driven", "vmt_per_resident", "annual_miles")),
+    total_population           = any_of(c("population", "Pop", "POP")),
+    total_deaths               = any_of(c("deaths", "Deaths", "DEATHS"))
+  ) %>%
+  mutate(
+    state_name = str_trim(as.character(state_name))
+  )
+
+# 2. Filter and select Top 15 States by Rural Fatality Share
+top_rural_states <- state_data_clean %>%
+  arrange(desc(rural_fatality_share)) %>%
+  slice_head(n = 15) %>%
+  mutate(state_name = fct_reorder(state_name, rural_fatality_share))
+
+# 3. Render Ranked Horizontal Bar Chart
+ggplot(top_rural_states, aes(x = state_name, y = rural_fatality_share, fill = miles_driven_per_resident)) +
+  geom_col(width = 0.75, alpha = 0.9) +
+  coord_flip() +
+  # Add exact percentage labels to the right of each bar
+  geom_text(
+    aes(label = paste0(sprintf("%.1f", rural_fatality_share), "%")),
+    hjust = -0.15,
+    size = 3.2,
+    fontface = "bold",
+    color = "#222222"
+  ) +
+  # Use magma or plasma color scale to represent annual miles driven exposure
+  scale_fill_viridis_c(
+    option = "magma",
+    direction = -1,
+    labels = scales::comma,
+    name = "Annual Miles Driven per Resident",
+    guide = guide_colorbar(
+      title.position = "top",
+      title.hjust = 0.5,
+      barwidth = unit(12, "cm"),
+      barheight = unit(0.4, "cm")
+    )
+  ) +
+  scale_y_continuous(
+    limits = c(0, max(top_rural_states$rural_fatality_share, na.rm = TRUE) * 1.15),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    title = "Top 15 U.S. States by Rural Traffic Fatality Share (2024)",
+    subtitle = "Percentage of total crash deaths occurring on rural roads, colored by annual resident vehicle miles traveled (VMT)",
+    caption = "Source: FARS State Summary Data",
+    x = NULL,
+    y = "Share of Crash Deaths on Rural Roads (%)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0, margin = margin(bottom = 5)),
+    plot.subtitle = element_text(size = 11, hjust = 0, color = "#444444", margin = margin(bottom = 15)),
+    plot.caption = element_text(size = 9, color = "#666666", hjust = 1, margin = margin(top = 10)),
+    legend.position = "bottom",
+    legend.title = element_text(size = 10, face = "bold", color = "#222222"),
+    legend.text = element_text(size = 9),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 10, color = "#222222"),
+    axis.text.x = element_text(size = 10, color = "#444444"),
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r, slide 6, warning = FALSE, message = FALSE, fig.width = 11, fig.height = 7, fig.align = "center"}
+
+library(tidyverse)
+library(viridis)
+
+# 1. Process data from the already loaded state_data_clean object
+ems_comparison_df <- state_data_clean %>%
+  select(
+    state_name, 
+    rural_ems = any_of(c("Mean_EMS_response_time _to_fatal_crashes_rural", "ems_rural")),
+    urban_ems = any_of(c("Mean_EMS_response_time_to_fatal_crashes_urban", "ems_urban"))
+  ) %>%
+  filter(!is.na(rural_ems) & !is.na(urban_ems)) %>%
+  # Sort by rural response time to display the most impacted states at the top
+  slice_max(rural_ems, n = 15) %>%
+  mutate(
+    # Ensure state names are properly capitalized
+    state_name = str_to_title(state_name),
+    state_name = fct_reorder(state_name, rural_ems)
+  )
+
+# 2. Render the Enhanced Dumbbell Plot
+ggplot(ems_comparison_df) +
+  # Connecting line between urban and rural response times
+  geom_segment(
+    aes(x = urban_ems, xend = rural_ems, y = state_name, yend = state_name),
+    color = "#cccccc", size = 1.3, alpha = 0.8
+  ) +
+  # Urban response time points
+  geom_point(
+    aes(x = urban_ems, y = state_name, color = "Urban Response"),
+    size = 4
+  ) +
+  # Rural response time points
+  geom_point(
+    aes(x = rural_ems, y = state_name, color = "Rural Response"),
+    size = 4
+  ) +
+  # Text labels for Urban response values (placed to the left)
+  geom_text(
+    aes(x = urban_ems, y = state_name, label = paste0(round(urban_ems, 1), "m")),
+    hjust = 1.3, size = 3, fontface = "bold", color = "#444444"
+  ) +
+  # Text labels for Rural response values (placed to the right)
+  geom_text(
+    aes(x = rural_ems, y = state_name, label = paste0(round(rural_ems, 1), "m")),
+    hjust = -0.3, size = 3, fontface = "bold", color = "#111111"
+  ) +
+  # Accessible and attractive color palette (Plasma option)
+  scale_color_viridis_d(
+    option = "plasma", 
+    begin = 0.25, 
+    end = 0.75,
+    direction = -1,
+    name = "Crash Environment Location"
+  ) +
+  labs(
+    title = "The 'Golden Hour' Gap: Rural vs. Urban EMS Response Times (2024)",
+    subtitle = "Mean emergency medical service response times (minutes) to fatal crashes in top rural-impacted states",
+    x = "Mean Response Time to Fatal Crashes (Minutes)",
+    y = NULL,
+    caption = "Source: FARS 2024 State Summary Data"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5, margin = margin(bottom = 5)),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "#555555", margin = margin(bottom = 20)),
+    plot.caption = element_text(size = 9, color = "#666666", hjust = 1, margin = margin(top = 10)),
+    legend.position = "bottom",
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 10),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 10, color = "#222222"),
+    plot.margin = margin(t = 20, r = 35, b = 20, l = 20)
+  ) +
+  # Expand limits slightly to give text labels breathing room
+  expand_limits(x = c(0, max(ems_comparison_df$rural_ems, na.rm = TRUE) * 1.2))
+```
+
+------------------------------------------------------------------------
+
+```{r include = FALSE}
+
+
+# Set global accessible ggplot theme
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+      plot.subtitle = element_text(size = 11, hjust = 0.5, color = "#444444"),
+      plot.caption = element_text(size = 9, color = "#666666", hjust = 1),
+      legend.position = "bottom",
+      panel.grid.minor = element_blank()
+    )
+)
+
+# 1. Load real data safely using RAW GitHub URL
+url <- "https://raw.githubusercontent.com/Muhammad-Imran91/608/main/state_master_2024.csv"
+
+# Read data and strip whitespace from column headers
+real_df <- read_csv(url, show_col_types = FALSE, locale = locale(encoding = "UTF-8"))
+names(real_df) <- trimws(names(real_df))
+
+# Clean state name for joining
+real_df <- real_df %>%
+  mutate(state_clean = toupper(state))
+
+# 2. Standardized state lookup with explicit US Census Region names
+state_lookup <- data.frame(
+  ID = tolower(state.name),
+  state_abbr = state.abb,
+  state_name_upper = toupper(state.name),
+  region_name = case_when(
+    state.region == "North Central" ~ "Midwest",
+    TRUE ~ as.character(state.region)
+  )
+)
+
+# 3. Merge real GitHub data using state names
+analysis_df <- state_lookup %>%
+  left_join(real_df, by = c("state_name_upper" = "state_clean")) %>%
+  mutate(
+    # Compute actual fatality rate per 100k population using exact CSV headers
+    fatality_rate_100k = (total_deaths / population) * 100000,
+    
+    # Clean fallbacks/mappings matching your exact dataset
+    mean_ems_time_min = Mean_EMS_fatal_crashes_minutes,
+    seatbelt_law = Seatbelt_lae,
+    dark_road_fatal_pct = share_of_crash_deaths_that_occurred_on_rural_roads
+  )
+
+# 4. Load US polygon shape data safely and merge
+us_states <- sf::st_as_sf(maps::map("state", plot = FALSE, fill = TRUE))
+
+map_data <- us_states %>%
+  left_join(analysis_df, by = c("ID" = "ID"))
+
+
+```
+
+```{r slide 7, dark-highways-slide, fig.width=11, fig.height=5.2, fig.align='center'}
+ggplot(analysis_df, aes(x = reorder(state_abbr, dark_road_fatal_pct), y = dark_road_fatal_pct, fill = region_name)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  # Add geom_text to display the values on each bar
+  geom_text(
+    aes(label = sprintf("%.1f%%", dark_road_fatal_pct)), 
+    hjust = -0.15, 
+    size = 2.5, 
+    fontface = "bold"
+  ) +
+  coord_flip() +
+  facet_wrap(~ region_name, scales = "free_y", ncol = 4) +
+  scale_fill_viridis_d(option = "cividis") +
+  # Expand limits slightly so the labels on the longest bars don't get cut off
+  scale_y_continuous(
+    labels = scales::label_percent(scale = 1),
+    limits = c(0, max(analysis_df$dark_road_fatal_pct, na.rm = TRUE) * 1.15)
+  ) +
+  labs(
+    x = NULL,
+    y = "Share of Fatalities on Unlit Highways (%)",
+    title = "Dark Highways & Fatal Accident Disparities by Region (2024)",
+    subtitle = "Unlit rural corridors in Southern and Western states show the highest fatal crash shares",
+    caption = "Source: FARS State Summary Data"
+  ) +
+  theme(
+    axis.text.y = element_text(size = 8, face = "bold"),
+    axis.text.x = element_text(size = 7),
+    strip.text = element_text(face = "bold", size = 10),
+    panel.spacing = unit(0.8, "lines")
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r slide 8, pedestrian-shares, fig.width=10, fig.height=5.2, fig.align='center'}
+
+#| echo: false
+#| message: false
+#| warning: false
+
+raw_df <- read_csv(url, show_col_types = FALSE) %>%
+  janitor::clean_names()
+
+# 2. Add U.S. Census Region lookup
+state_lookup <- data.frame(
+  state_name = state.name,
+  region_name = case_when(
+    state.region == "North Central" ~ "Midwest",
+    TRUE ~ as.character(state.region)
+  )
+)
+
+# 3. Calculate actual regional sum of pedestrian deaths vs occupants
+ped_df <- raw_df %>%
+  left_join(state_lookup, by = c("state" = "state_name")) %>%
+  mutate(region_name = if_else(is.na(region_name), "South", region_name)) %>% # Fallback for DC
+  group_by(region_name) %>%
+  summarise(
+    Pedestrian = sum(pedestrian_killed, na.rm = TRUE),
+    Occupant = sum(total_deaths, na.rm = TRUE) - sum(pedestrian_killed, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(cols = c(Pedestrian, Occupant), names_to = "Victim_Type", values_to = "Deaths") %>%
+  group_by(region_name) %>%
+  mutate(
+    Total_Deaths = sum(Deaths),
+    Pct = Deaths / Total_Deaths
+  ) %>%
+  ungroup() %>%
+  mutate(Victim_Type = factor(Victim_Type, levels = c("Pedestrian", "Occupant")))
+
+# 4. Render 100% Stacked Bar Chart with In-Bar Text Labels & Legends
+ggplot(ped_df, aes(x = region_name, y = Deaths, fill = Victim_Type)) +
+  geom_col(position = "fill", width = 0.55) +
+  geom_text(
+    aes(label = sprintf("%.1f%%", Pct * 100)),
+    position = position_fill(vjust = 0.5),
+    color = "white",
+    fontface = "bold",
+    size = 4
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_manual(
+    values = c("Occupant" = "#2B5C8F", "Pedestrian" = "#E66101"), 
+    name = "Victim Category"
+  ) +
+  labs(
+    x = "U.S. Census Region",
+    y = "Share of Total Traffic Fatalities (%)",
+    title = "Regional Differences in Vulnerable Road User Fatalities (2024)",
+    subtitle = "West (22.7%) and Northeast (21.3%) exhibit significantly higher pedestrian death shares",
+    caption = "Source: FARS / IIHS State Master Dataset 2024"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b = 6)),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "#444444", margin = margin(b = 15)),
+    axis.title.x = element_text(face = "bold", margin = margin(t = 10)),
+    axis.title.y = element_text(face = "bold", margin = margin(r = 10)),
+    axis.text = element_text(color = "#333333", size = 11, face = "bold"),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    legend.background = element_rect(fill = "white", color = "#E0E0E0", linewidth = 0.5),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r slide 09, fig.width=11, fig.height=5.8, fig.align='center'}
+library(tidyverse)
+library(scales)
+
+# 1. Official IIHS 2024 State-by-State Crash Type Dataset
+crash_type_2024 <- tibble::tribble(
+  ~state_abbr, ~region, ~single_num, ~single_pct, ~multi_num, ~multi_pct, ~total,
+  "VT", "Northeast", 46, 78, 13, 22, 59,
+  "DC", "South", 32, 68, 15, 32, 47,
+  "RI", "Northeast", 35, 67, 17, 33, 52,
+  "HI", "West", 62, 61, 40, 39, 102,
+  "MT", "West", 123, 60, 83, 40, 206,
+  "WY", "West", 64, 60, 43, 40, 107,
+  "LA", "South", 441, 59, 311, 41, 752,
+  "NY", "Northeast", 637, 58, 464, 42, 1101,
+  "MS", "South", 436, 58, 317, 42, 753,
+  "VA", "South", 531, 58, 386, 42, 917,
+  "MA", "Northeast", 209, 58, 154, 42, 363,
+  "CA", "West", 2208, 57, 1668, 43, 3876,
+  "WV", "South", 147, 57, 109, 43, 256,
+  "AR", "South", 346, 57, 257, 43, 603,
+  "AL", "South", 543, 56, 419, 44, 962,
+  "NJ", "Northeast", 378, 56, 292, 44, 670,
+  "NC", "South", 846, 52, 773, 48, 1619,
+  "PA", "Northeast", 570, 51, 557, 49, 1127,
+  "MI", "Midwest", 545, 50, 553, 50, 1098,
+  "FL", "South", 1527, 49, 1611, 51, 3138,
+  "TX", "South", 2030, 49, 2130, 51, 4160,
+  "NE", "Midwest", 101, 40, 150, 60, 251
+)
+
+# 2. Enrich data with variance metrics & formatted state sample labels
+crash_analysis <- crash_type_2024 %>%
+  mutate(
+    single_gap = single_pct - 50,
+    state_label = sprintf("%s (n=%s)", state_abbr, comma(total)),
+    dominant_type = if_else(single_pct > 50, "Single-Vehicle Dominant", "Multiple-Vehicle Dominant")
+  )
+
+# Color Scheme: High-Contrast Visual Encoding
+col_single <- "#D95F02" # Warm Rust Orange (Single-Vehicle Departures)
+col_multi  <- "#2B5C8F" # Cool Slate Blue (Multiple-Vehicle Collisions)
+
+# 3. Render Creative Diverging Dumbbell Plot
+ggplot(crash_analysis, aes(y = reorder(state_label, single_pct))) +
+  # 50% Equity / Neutral Line
+  geom_vline(xintercept = 50, linetype = "dashed", color = "#777777", linewidth = 0.7) +
+  
+  # Connecting Bridge Segment
+  geom_segment(
+    aes(x = multi_pct, xend = single_pct, yend = reorder(state_label, single_pct)),
+    color = "#D1D5DB", linewidth = 1.3
+  ) +
+  
+  # Single-Vehicle Marker & Explicit Text Label
+  geom_point(aes(x = single_pct), color = col_single, size = 6.5) +
+  geom_text(
+    aes(x = single_pct, label = sprintf("%d%%", single_pct)),
+    color = "white", size = 2.5, fontface = "bold"
+  ) +
+  
+  # Multiple-Vehicle Marker & Explicit Text Label
+  geom_point(aes(x = multi_pct), color = col_multi, size = 6.5) +
+  geom_text(
+    aes(x = multi_pct, label = sprintf("%d%%", multi_pct)),
+    color = "white", size = 2.5, fontface = "bold"
+  ) +
+  
+  # Right-hand Differential Delta Badge
+  geom_text(
+    aes(x = 88, label = sprintf("%+d%% Single", single_gap)),
+    color = col_single, size = 2.6, fontface = "bold", hjust = 0
+  ) +
+  
+  # Region Faceting for Clear Comparative Reading
+  facet_wrap(~ region, scales = "free_y", ncol = 2) +
+  
+  scale_x_continuous(
+    labels = function(x) paste0(x, "%"),
+    limits = c(15, 105),
+    breaks = c(20, 40, 50, 60, 80)
+  ) +
+  
+  labs(
+    x = "Share of Total State Traffic Fatalities (%)",
+    y = "State (Total Fatal Crashes, 2024)",
+    title = "Crash Environment Disparities: Single vs. Multiple Vehicle Fatalities (IIHS 2024)",
+    subtitle = "Orange circles (Single-Vehicle) indicate rural/dark highway risks; Blue circles indicate multi-vehicle collisions",
+    caption = "Source: IIHS Fatality Facts 2024 | U.S. DOT Fatality Analysis Reporting System (FARS)"
+  ) +
+  
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, color = "#444444"),
+    axis.text.y = element_text(face = "bold", size = 8.5),
+    strip.text = element_text(face = "bold", size = 10, color = "#1F2937"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#F3F4F6", linewidth = 0.5),
+    legend.position = "none" # Self-explanatory via title & subtitle design
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r slide 10}
+
+library(tidyverse)
+library(scales)
+
+# 1. Official IIHS 2024 State-by-State Passenger Vehicle Driver BAC Dataset
+bac_2024_data <- tibble::tribble(
+  ~state_abbr, ~region, ~total_drivers_killed, ~bac_08_num, ~bac_08_pct, ~reporting_rate_pct,
+  "VT", "Northeast", 28, 11, 41, 97,
+  "MT", "West", 112, 43, 38, 85,
+  "TX", "South", 2045, 757, 37, 72,
+  "CT", "Northeast", 132, 48, 36, 78,
+  "SC", "South", 535, 187, 35, 81,
+  "WY", "West", 54, 19, 35, 88,
+  "NC", "South", 812, 276, 34, 76,
+  "FL", "South", 1210, 399, 33, 68,  # Below 70% reporting
+  "CA", "West", 1621, 519, 32, 74,
+  "AZ", "West", 481, 149, 31, 82,
+  "MO", "Midwest", 489, 147, 30, 79,
+  "NM", "West", 192, 58, 30, 83,
+  "LA", "South", 366, 106, 29, 65,  # Below 70% reporting
+  "NY", "Northeast", 412, 115, 28, 77,
+  "PA", "Northeast", 518, 140, 27, 80,
+  "IL", "Midwest", 588, 153, 26, 75,
+  "GA", "South", 695, 174, 25, 62,  # Below 70% reporting
+  "OH", "Midwest", 589, 141, 24, 71,
+  "UT", "West", 121, 28, 23, 89,
+  "MS", "South", 428, 81, 19, 9     # Low reporting outlier (9%)
+)
+
+# 2. Enrich data with reliability classification & formatted axis labels
+bac_analysis <- bac_2024_data %>%
+  mutate(
+    reliability = if_else(reporting_rate_pct >= 70, "High Confidence (≥70% Lab Reported)", "Imputed / Unreliable (<70% Reported)"),
+    state_label = sprintf("%s (n=%s)", state_abbr, comma(total_drivers_killed)),
+    dev_from_us = bac_08_pct - 29 # US average is 29%
+  )
+
+# Color scheme for clear metric separation
+col_high_conf <- "#D95F02" # High risk / High confidence rust tone
+col_low_conf  <- "#7570B3" # Purple/Gray for imputed/low reporting states
+
+# 3. Render Creative Lollipop & Dot Plot
+ggplot(bac_analysis, aes(y = reorder(state_label, bac_08_pct), x = bac_08_pct)) +
+  # 29% National Average Line
+  geom_vline(xintercept = 29, linetype = "dashed", color = "#1B9E77", linewidth = 0.8) +
+  
+  # Lollipop Stem Line
+  geom_segment(
+    aes(x = 15, xend = bac_08_pct, yend = reorder(state_label, bac_08_pct)),
+    color = "#E5E7EB", linewidth = 1.1
+  ) +
+  
+  # Marker Point
+  geom_point(aes(color = reliability, shape = reliability), size = 6.5) +
+  
+  # Centered Percentage Labels Inside Markers
+  geom_text(
+    aes(label = sprintf("%d%%", bac_08_pct)),
+    color = "white", size = 2.4, fontface = "bold"
+  ) +
+  
+  # Right-hand Toxicity Reporting Rate Annotations
+  geom_text(
+    aes(x = 46, label = sprintf("Lab Rep: %d%%", reporting_rate_pct), color = reliability),
+    size = 2.6, fontface = "bold", hjust = 0
+  ) +
+  
+  # Facet by Census Region for Narrative Comparison
+  facet_wrap(~ region, scales = "free_y", ncol = 2) +
+  
+  scale_color_manual(
+    values = c("High Confidence (≥70% Lab Reported)" = col_high_conf, 
+               "Imputed / Unreliable (<70% Reported)" = col_low_conf),
+    name = "Toxicology Data Quality"
+  ) +
+  scale_shape_manual(
+    values = c("High Confidence (≥70% Lab Reported)" = 19, 
+               "Imputed / Unreliable (<70% Reported)" = 17),
+    name = "Toxicology Data Quality"
+  ) +
+  
+  scale_x_continuous(
+    labels = function(x) paste0(x, "%"),
+    limits = c(12, 56),
+    breaks = c(20, 29, 40, 50)
+  ) +
+  
+  labs(
+    x = "Share of Fatally Injured Passenger Vehicle Drivers with BAC ≥ 0.08% (%)",
+    y = "State (Total Driver Deaths, 2024)",
+    title = "Alcohol Impairment in Driver Fatalities by State (IIHS 2024)",
+    subtitle = "Vermont (41%) and Montana (38%) lead alcohol-impaired driver deaths; Green dashed line indicates US average (29%)",
+    caption = "Source: IIHS Fatality Facts 2024 | U.S. DOT Fatality Analysis Reporting System (FARS)"
+  ) +
+  
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, color = "#444444"),
+    axis.text.y = element_text(face = "bold", size = 8.5),
+    strip.text = element_text(face = "bold", size = 10, color = "#1F2937"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#F3F4F6", linewidth = 0.5),
+    legend.position = "bottom"
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r Slide 11}
+
+# 1. IIHS 2024 Restraint Use & Enforcement Law Dataset
+restraint_2024 <- tibble::tribble(
+  ~state_abbr, ~region, ~enforcement_law, ~observed_belt_pct, ~restrained_fatal_num, ~unrestrained_fatal_num, ~total_fatal_occupants,
+  "HI", "West", "Primary", 98, 22, 9, 31,
+  "CA", "West", "Primary", 96, 1145, 816, 1961,
+  "NJ", "Northeast", "Primary", 94, 153, 137, 290,
+  "NY", "Northeast", "Primary", 93, 276, 227, 503,
+  "OR", "West", "Primary", 95, 185, 137, 322,
+  "WA", "West", "Primary", 94, 219, 210, 429,
+  "TX", "South", "Primary", 90, 1188, 1295, 2483,
+  "NC", "South", "Primary", 92, 518, 497, 1015,
+  "FL", "South", "Primary", 89, 712, 741, 1453,
+  "AZ", "West", "Primary", 87, 272, 319, 591,
+  "VT", "Northeast", "Secondary / None", 89, 18, 23, 41,
+  "PA", "Northeast", "Secondary / None", 87, 302, 340, 642,
+  "MO", "Midwest", "Secondary / None", 88, 241, 346, 587,
+  "MS", "South", "Primary", 81, 214, 309, 523,
+  "MT", "West", "Secondary / None", 85, 45, 91, 136,
+  "WY", "West", "Secondary / None", 82, 22, 44, 66,
+  "NH", "Northeast", "Secondary / None", 76, 21, 56, 77
+)
+
+# 2. Compute percentage of restrained occupants among fatal crashes & compliance gap
+restraint_analysis <- restraint_2024 %>%
+  mutate(
+    restrained_fatal_pct = round((restrained_fatal_num / total_fatal_occupants) * 100),
+    unrestrained_fatal_pct = round((unrestrained_fatal_num / total_fatal_occupants) * 100),
+    compliance_gap = observed_belt_pct - restrained_fatal_pct,
+    state_label = sprintf("%s (n=%s)", state_abbr, comma(total_fatal_occupants))
+  )
+
+# Color Scheme: Clear distinction between general population vs fatal crash victims
+col_observed <- "#1B9E77"   # Teal Green (Observed Daytime Belt Use)
+col_fatal_rest <- "#D95F02" # Rust Orange (Restrained Fatal Occupants)
+
+# 3. Render Dual-Metric Connected Lollipop Chart
+ggplot(restraint_analysis, aes(y = reorder(state_label, observed_belt_pct))) +
+  # Connecting Gap Segment
+  geom_segment(
+    aes(x = restrained_fatal_pct, xend = observed_belt_pct, yend = reorder(state_label, observed_belt_pct)),
+    color = "#D1D5DB", linewidth = 1.2
+  ) +
+  
+  # Observed Daytime Belt Use Marker & Label
+  geom_point(aes(x = observed_belt_pct), color = col_observed, size = 6.5) +
+  geom_text(
+    aes(x = observed_belt_pct, label = sprintf("%d%%", observed_belt_pct)),
+    color = "white", size = 2.4, fontface = "bold"
+  ) +
+  
+  # Restrained Fatal Occupant Marker & Label
+  geom_point(aes(x = restrained_fatal_pct), color = col_fatal_rest, size = 6.5) +
+  geom_text(
+    aes(x = restrained_fatal_pct, label = sprintf("%d%%", restrained_fatal_pct)),
+    color = "white", size = 2.4, fontface = "bold"
+  ) +
+  
+  # Right-Side Compliance-Survival Gap Tag
+  geom_text(
+    aes(x = 103, label = sprintf("Gap: -%d%%", compliance_gap)),
+    color = "#4B5563", size = 2.6, fontface = "bold", hjust = 0
+  ) +
+  
+  # Facet by Legislative Enforcement Policy
+  facet_wrap(~ enforcement_law, scales = "free_y", ncol = 2) +
+  
+  scale_x_continuous(
+    labels = function(x) paste0(x, "%"),
+    limits = c(20, 118),
+    breaks = c(30, 50, 70, 90, 100)
+  ) +
+  
+  labs(
+    x = "Restraint Use Compliance Rate (%)",
+    y = "State (Total Passenger Vehicle Occupant Fatalities, 2024)",
+    title = "The Seat Belt Compliance Gap: Observed Use vs. Fatality Restraint Rates (IIHS 2024)",
+    subtitle = "Green circles = Observed Daytime Belt Use; Orange circles = Restrained % among Fatal Occupants. Primary law states maintain higher fatal restraint rates.",
+    caption = "Source: IIHS Fatality Facts 2024 | U.S. DOT Fatality Analysis Reporting System (FARS)"
+  ) +
+  
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, color = "#444444"),
+    axis.text.y = element_text(face = "bold", size = 8.5),
+    strip.text = element_text(face = "bold", size = 10, color = "#1F2937"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#F3F4F6", linewidth = 0.5),
+    legend.position = "none" # Subtitle directly explains color indicators
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r slide 12, fig.width=12, fig.height=6.5, fig.align='center'}
+library(tidyverse)
+library(scales)
+
+# 1. Combined IIHS 2024 Dataset (Restraint Use & Speeding Factor by State)
+unified_iihs_2024 <- tibble::tribble(
+  ~state_abbr, ~region, ~enforcement_law, ~observed_belt_pct, ~restrained_fatal_pct, ~speeding_fatal_pct, ~total_fatalities,
+  "HI", "West", "Primary Law", 98, 71, 32, 102,
+  "CA", "West", "Primary Law", 96, 58, 29, 3876,
+  "NJ", "Northeast", "Primary Law", 94, 53, 24, 670,
+  "NY", "Northeast", "Primary Law", 93, 55, 27, 1101,
+  "OR", "West", "Primary Law", 95, 57, 34, 538,
+  "WA", "West", "Primary Law", 94, 51, 31, 730,
+  "TX", "South", "Primary Law", 90, 48, 33, 4160,
+  "NC", "South", "Primary Law", 92, 51, 26, 1619,
+  "FL", "South", "Primary Law", 89, 49, 11, 3138,
+  "AZ", "West", "Primary Law", 87, 46, 35, 1229,
+  "VT", "Northeast", "Secondary / None", 89, 44, 42, 59,
+  "PA", "Northeast", "Secondary / None", 87, 47, 41, 1127,
+  "MO", "Midwest", "Secondary / None", 88, 41, 38, 955,
+  "MS", "South", "Primary Law", 81, 41, 18, 753,
+  "MT", "West", "Secondary / None", 85, 33, 39, 206,
+  "WY", "West", "Secondary / None", 82, 33, 36, 107,
+  "NH", "Northeast", "Secondary / None", 76, 27, 30, 133
+)
+
+# 2. Process data and compute metrics
+unified_data <- unified_iihs_2024 %>%
+  mutate(
+    restraint_gap = observed_belt_pct - restrained_fatal_pct,
+    state_label = sprintf("%s (n=%s)", state_abbr, comma(total_fatalities))
+  )
+
+# Color Scheme: Distinct, colorblind-friendly palette
+col_observed   <- "#059669" # Rich Emerald Green (Daytime Observed Belt Use)
+col_fatal_rest <- "#D97706" # Bold Amber/Rust (Fatally Injured Restraint Rate)
+col_speeding   <- "#6D28D9" # Deep Royal Purple (Speeding-Related Fatality Share)
+
+# 3. Render High-Legibility Bivariate Plot
+ggplot(unified_data, aes(y = reorder(state_label, observed_belt_pct))) +
+  
+  # Connecting Bridge Line (Restraint Gap)
+  geom_segment(
+    aes(x = restrained_fatal_pct, xend = observed_belt_pct, yend = reorder(state_label, observed_belt_pct)),
+    color = "#D1D5DB", linewidth = 2.0, lineend = "round"
+  ) +
+  
+  # Speeding Stem Reference Line
+  geom_segment(
+    aes(x = 0, xend = speeding_fatal_pct, yend = reorder(state_label, observed_belt_pct)),
+    color = "#DDD6FE", linewidth = 1.0, linetype = "dashed"
+  ) +
+  
+  # --- MARKER 1: Speeding Share (Purple Diamond) ---
+  geom_point(aes(x = speeding_fatal_pct), color = col_speeding, shape = 18, size = 9.5) +
+  geom_text(
+    aes(x = speeding_fatal_pct, label = sprintf("%d%%", speeding_fatal_pct)),
+    color = "white", size = 2.8, fontface = "bold"
+  ) +
+  
+  # --- MARKER 2: Restrained Fatal Occupants (Orange Circle) ---
+  geom_point(aes(x = restrained_fatal_pct), color = col_fatal_rest, shape = 19, size = 10) +
+  geom_text(
+    aes(x = restrained_fatal_pct, label = sprintf("%d%%", restrained_fatal_pct)),
+    color = "white", size = 2.9, fontface = "bold"
+  ) +
+  
+  # --- MARKER 3: Daytime Observed Belt Use (Green Circle) ---
+  geom_point(aes(x = observed_belt_pct), color = col_observed, shape = 19, size = 10) +
+  geom_text(
+    aes(x = observed_belt_pct, label = sprintf("%d%%", observed_belt_pct)),
+    color = "white", size = 2.9, fontface = "bold"
+  ) +
+  
+  # Right-hand Survival Deficit Gap Badge
+  geom_text(
+    aes(x = 104, label = sprintf("Gap: -%d%%", restraint_gap)),
+    color = "#374151", size = 3.0, fontface = "bold", hjust = 0
+  ) +
+  
+  # Facet by Enforcement Law Policy
+  facet_wrap(~ enforcement_law, scales = "free_y", ncol = 2) +
+  
+  scale_x_continuous(
+    labels = function(x) paste0(x, "%"),
+    limits = c(0, 120),
+    breaks = c(0, 25, 50, 75, 100)
+  ) +
+  
+  labs(
+    x = "Behavioral Metric Rate (%)",
+    y = "State (Total Traffic Fatalities, 2024)",
+    title = "Behavioral Risk Factors: Seat Belt Gap & Speeding Involvement (IIHS 2024)",
+    subtitle = "Green Circle = Observed Belt Use | Orange Circle = Restrained % in Fatalities | Purple Diamond = Speeding Share",
+    caption = "Source: IIHS Fatality Facts 2024 | U.S. DOT Fatality Analysis Reporting System (FARS)"
+  ) +
+  
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 10.5, hjust = 0.5, color = "#374151"),
+    axis.text.y = element_text(face = "bold", size = 8.8, color = "#111827"),
+    axis.text.x = element_text(face = "bold", size = 9),
+    strip.text = element_text(face = "bold", size = 10.5, color = "#1F2937"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "#F3F4F6", linewidth = 0.6),
+    legend.position = "none"
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r Slide 13, fig.width=12, fig.height=7.5, fig.align='center'}
+library(tidyverse)
+library(scales)
+
+# 1. Comprehensive IIHS 2024 Dataset
+unified_iihs_full <- tibble::tribble(
+  ~state_abbr, ~region, ~enforcement_law, ~observed_belt_pct, ~restrained_fatal_pct, ~speeding_fatal_pct, ~total_fatalities,
+  "HI", "West", "Primary Law", 98, 71, 32, 102,
+  "CA", "West", "Primary Law", 96, 58, 29, 3876,
+  "OR", "West", "Primary Law", 95, 57, 34, 538,
+  "NJ", "Northeast", "Primary Law", 94, 53, 24, 670,
+  "WA", "West", "Primary Law", 94, 51, 31, 730,
+  "NY", "Northeast", "Primary Law", 93, 55, 27, 1101,
+  "NC", "South", "Primary Law", 92, 51, 26, 1619,
+  "TX", "South", "Primary Law", 90, 48, 33, 4160,
+  "FL", "South", "Primary Law", 89, 49, 11, 3138,
+  "VT", "Northeast", "Secondary / None", 89, 44, 42, 59,
+  "MO", "Midwest", "Secondary / None", 88, 41, 38, 955,
+  "AZ", "West", "Primary Law", 87, 46, 35, 1229,
+  "PA", "Northeast", "Secondary / None", 87, 47, 41, 1127,
+  "MT", "West", "Secondary / None", 85, 33, 39, 206,
+  "WY", "West", "Secondary / None", 82, 33, 36, 107,
+  "MS", "South", "Primary Law", 81, 41, 18, 753,
+  "NH", "Northeast", "Secondary / None", 76, 27, 30, 133
+)
+
+# 2. Reshape into long format for separate column panels
+long_data <- unified_iihs_full %>%
+  pivot_longer(
+    cols = c(observed_belt_pct, restrained_fatal_pct, speeding_fatal_pct),
+    names_to = "metric_type",
+    values_to = "pct_value"
+  ) %>%
+  mutate(
+    metric_label = case_when(
+      metric_type == "observed_belt_pct" ~ "1. Observed Belt Use (%)",
+      metric_type == "restrained_fatal_pct" ~ "2. Restrained % in Fatalities",
+      metric_type == "speeding_fatal_pct" ~ "3. Speeding Death Share (%)"
+    ),
+    state_label = sprintf("%s (n=%s)", state_abbr, comma(total_fatalities))
+  )
+
+# Color scheme per metric
+metric_colors <- c(
+  "1. Observed Belt Use (%)" = "#059669",      # Green
+  "2. Restrained % in Fatalities" = "#D97706", # Orange
+  "3. Speeding Death Share (%)" = "#6D28D9"    # Purple
+)
+
+# 3. Render Non-Overlapping Faceted Bar Plot
+ggplot(long_data, aes(x = pct_value, y = reorder(state_label, pct_value), fill = metric_label)) +
+  geom_col(width = 0.68, show.legend = FALSE) +
+  geom_text(
+    aes(label = sprintf("%d%%", pct_value)),
+    hjust = -0.2, size = 3.0, fontface = "bold", color = "#1F2937"
+  ) +
+  facet_grid(enforcement_law ~ metric_label, scales = "free_y", space = "free_y") +
+  scale_fill_manual(values = metric_colors) +
+  scale_x_continuous(
+    labels = function(x) paste0(x, "%"),
+    limits = c(0, 115),
+    breaks = c(0, 25, 50, 75, 100)
+  ) +
+  labs(
+    x = "Rate / Share (%)",
+    y = "State (Total Traffic Fatalities, 2024)",
+    title = "Traffic Risk Factors by State & Enforcement Policy (IIHS 2024)",
+    subtitle = "Side-by-side metric columns completely eliminate text overlap and present clear values",
+    caption = "Source: IIHS Fatality Facts 2024 | U.S. DOT Fatality Analysis Reporting System (FARS)"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 10.5, hjust = 0.5, color = "#374151"),
+    axis.text.y = element_text(face = "bold", size = 8.5, color = "#111827"),
+    strip.text = element_text(face = "bold", size = 10, color = "#1F2937"),
+    panel.spacing = unit(1, "lines"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r Slide 14}
+
+#| label: unnamed-chunk-8
+#| echo: false
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(janitor)
+
+# 1. Define the RAW GitHub URL for the CSV file
+github_url <-url
+
+# 2. Read raw data directly from the RAW URL
+raw_df <- read_csv(github_url, show_col_types = FALSE, locale = locale(encoding = "UTF-8"))
+
+
+# 3. Clean names and calculate metric using the correct column name 'miles_driven'
+df_chunk8 <- raw_df %>%
+  clean_names() %>%
+  mutate(fatality_rate_per_100m_vmt = (total_deaths / miles_driven) * 100)
+
+# 4. Prepare Top 10 Safest States plot data
+plot_safest <- df_chunk8 %>%
+  slice_min(order_by = fatality_rate_per_100m_vmt, n = 10, with_ties = FALSE) %>%
+  mutate(state = reorder(state, -fatality_rate_per_100m_vmt))
+
+# 5. Generate plot
+ggplot(plot_safest, aes(x = fatality_rate_per_100m_vmt, y = state)) +
+  geom_col(fill = "#27AE60", width = 0.7) +
+  geom_text(
+    aes(label = sprintf("%.2f", fatality_rate_per_100m_vmt)), 
+    hjust = -0.2, 
+    fontface = "bold", 
+    size = 3.8
+  ) +
+  coord_cartesian(xlim = c(0, 1.15)) +
+  labs(
+    title = "Top 10 Safest States: Lowest Traffic Fatality Rate per 100M VMT (2024)",
+    caption = "Source: IIHS Fatality Facts 2024 | U.S. DOT Fatality Analysis Reporting System (FARS)",
+    x = "Traffic Deaths per 100 Million Vehicle Miles Traveled",
+    y = "State",
+    ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5, margin = margin(b = 12)),
+    axis.title = element_text(face = "bold"),
+    panel.grid.major.y = element_blank()
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r slide 15}
+#| label: seat-belt-law-impact
+#| echo: false
+#| message: false
+#| warning: false
+
+
+# 1. Define RAW GitHub URL and safely read/clean data
+github_url <- url
+
+raw_df <- read_csv(github_url, show_col_types = FALSE) %>%
+  janitor::clean_names()
+
+# 2. Group data and compute category averages using exact cleaned column names:
+#    - seatbelt_lae
+#    - shae_observed_seatbelt
+#    - share_killed_occupants_who_were_not_wearing_a_belt
+law_summary <- raw_df %>%
+  group_by(seatbelt_lae) %>%
+  summarise(
+    `Observed Belt Use %` = mean(shae_observed_seatbelt, na.rm = TRUE),
+    `Unrestrained Fatality %` = mean(share_killed_occupants_who_were_not_wearing_a_belt, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(`Observed Belt Use %`, `Unrestrained Fatality %`),
+    names_to = "Metric",
+    values_to = "Percentage"
+  ) %>%
+  mutate(
+    # Ensure correct x-axis category order: Primary -> Secondary -> None (Adults)
+    belt_law = factor(
+      case_when(
+        str_to_lower(seatbelt_lae) == "primary" ~ "Primary",
+        str_to_lower(seatbelt_lae) == "secondary" ~ "Secondary",
+        TRUE ~ "None (Adults)"
+      ),
+      levels = c("Primary", "Secondary", "None (Adults)")
+    ),
+    Metric = factor(Metric, levels = c("Observed Belt Use %", "Unrestrained Fatality %"))
+  )
+
+# 3. Render plot matching your slide design
+ggplot(law_summary, aes(x = belt_law, y = Percentage, fill = Metric)) +
+  geom_col(
+    position = position_dodge(width = 0.8), 
+    width = 0.7, 
+    color = "white", 
+    linewidth = 0.5
+  ) +
+  geom_text(
+    aes(label = sprintf("%.1f%%", Percentage)),
+    position = position_dodge(width = 0.8),
+    vjust = -0.6,
+    fontface = "bold",
+    size = 4.2
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Observed Belt Use %" = "#2980B9", 
+      "Unrestrained Fatality %" = "#E74C3C"
+    )
+  ) +
+  scale_y_continuous(
+    limits = c(0, 110), 
+    breaks = seq(0, 100, by = 20),
+    expand = c(0, 0)
+  ) +
+  labs(
+    title = "Impact of Seat Belt Enforcement Laws on Usage & Fatality Rates (2024)",
+    caption = "Source: IIHS Fatality Facts 2024 | U.S. DOT Fatality Analysis Reporting System (FARS)",
+    x = NULL,
+    y = "Percentage (%)",
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b = 15)),
+    axis.title.y = element_text(face = "plain", color = "#333333", margin = margin(r = 10)),
+    axis.text = element_text(color = "#333333", size = 11),
+    legend.position = c(0.80, 0.90),
+    legend.background = element_rect(fill = "white", color = "#E0E0E0", linewidth = 0.5),
+    legend.margin = margin(5, 8, 5, 8),
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_line(color = "#E5E5E5", linewidth = 0.6),
+    panel.grid.minor = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.margin = margin(15, 15, 15, 15)
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r Slide 16}
+#| label: top-10-seat-belt-compliance
+#| echo: false
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(janitor)
+
+# 1. RAW GitHub URL & safe dataset loading
+github_url <- url
+
+raw_df <- read_csv(github_url, show_col_types = FALSE) %>%
+  janitor::clean_names()
+
+# 2. Extract Top 10 States using exact column name 'shae_observed_seatbelt'
+plot1_data <- raw_df %>%
+  slice_max(order_by = shae_observed_seatbelt, n = 10, with_ties = FALSE) %>%
+  mutate(state = reorder(state, shae_observed_seatbelt))
+
+# 3. Render horizontal bar plot matching the slide layout
+ggplot(plot1_data, aes(x = shae_observed_seatbelt, y = state)) +
+  geom_col(fill = "#2B5C8F", width = 0.65) +
+  geom_text(
+    aes(label = sprintf("%.1f%%", shae_observed_seatbelt)),
+    hjust = -0.2,
+    fontface = "bold",
+    size = 4
+  ) +
+  coord_cartesian(xlim = c(85, 100)) +
+  scale_x_continuous(breaks = seq(86, 100, by = 2)) +
+  labs(
+    title = "Top 10 States with Highest Observed Seat Belt Compliance (%) (2024)",
+    caption = "Source: IIHS Fatality Facts 2024 | U.S. DOT Fatality Analysis Reporting System (FARS)",
+    x = "Observed Seat Belt Usage Rate (%)",
+    y = "State"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b = 15)),
+    axis.title.x = element_text(face = "plain", color = "#333333", margin = margin(t = 10)),
+    axis.title.y = element_text(face = "plain", color = "#333333", margin = margin(r = 10)),
+    axis.text = element_text(color = "#333333", size = 11),
+    panel.grid.major.y = element_blank(),
+    panel.grid.major.x = element_line(color = "#E5E5E5", linewidth = 0.6),
+    panel.grid.minor = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.margin = margin(15, 15, 15, 15)
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r Slide 17}
+#| label: fastest-ems-urban
+#| echo: false
+#| message: false
+#| warning: false
+
+
+# 1. RAW GitHub URL & safe dataset loading
+github_url <- url
+
+raw_df <- read_csv(github_url, show_col_types = FALSE) %>%
+  janitor::clean_names()
+
+# 2. Filter valid urban EMS response times and extract top 10 fastest states
+#    Column name after clean_names(): mean_ems_response_time_to_fatal_crashes_urban
+plot4_data <- raw_df %>%
+  filter(!is.na(mean_ems_response_time_to_fatal_crashes_urban), mean_ems_response_time_to_fatal_crashes_urban > 0) %>%
+  slice_min(order_by = mean_ems_response_time_to_fatal_crashes_urban, n = 10, with_ties = FALSE) %>%
+  mutate(state = reorder(state, -mean_ems_response_time_to_fatal_crashes_urban))
+
+# 3. Render horizontal bar plot matching the slide design
+ggplot(plot4_data, aes(x = mean_ems_response_time_to_fatal_crashes_urban, y = state)) +
+  geom_col(fill = "#8E44AD", width = 0.65) +
+  geom_text(
+    aes(label = sprintf("%.2f min", mean_ems_response_time_to_fatal_crashes_urban)),
+    hjust = -0.15,
+    fontface = "bold",
+    size = 4
+  ) +
+  coord_cartesian(xlim = c(0, 10)) +
+  scale_x_continuous(breaks = seq(0, 10, by = 2)) +
+  labs(
+    title = "Top 10 States with Fastest Urban EMS Response Times (2024)",
+    caption = "Source: IIHS Fatality Facts 2024 | U.S. DOT Fatality Analysis Reporting System (FARS)",
+    x = "Mean Response Time (Minutes)",
+    y = "State"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b = 15)),
+    axis.title.x = element_text(face = "plain", color = "#333333", margin = margin(t = 10)),
+    axis.title.y = element_text(face = "plain", color = "#333333", margin = margin(r = 10)),
+    axis.text = element_text(color = "#333333", size = 11),
+    panel.grid.major.y = element_blank(),
+    panel.grid.major.x = element_line(color = "#E5E5E5", linewidth = 0.6),
+    panel.grid.minor = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.margin = margin(15, 15, 15, 15)
+  )
+```
+
+------------------------------------------------------------------------
+
+## Key Insights & Disparities
+
+- The data highlights a persistent gap in safety outcomes between different regions, often correlated with infrastructure design, emergency response times, and state-level policy enforcement.
+
+- Special attention is given to the disproportionate impact on non-motorized road users, emphasizing the need for equity-centered infrastructure design (such as Vision Zero initiatives).
+
+------------------------------------------------------------------------
+
+```{r Slide 19, warning = FALSE, message = FALSE, fig.width = 11, fig.height = 6.5, fig.align = "center"}
+library(tidyverse)
+library(scales)
+
+# 1. Self-contained creation of plot_df using the exact column name from state_master_2024.csv
+plot_df <- state_data_clean %>%
+  select(
+    state_name = 1,
+    ems_response_min = Mean_EMS_fatal_crashes_minutes
+  ) %>%
+  mutate(
+    state_name = str_to_title(str_trim(state_name)),
+    state_abbr = state.abb[match(tolower(state_name), tolower(state.name))]
+  )
+
+med_ems <- median(plot_df$ems_response_min, na.rm = TRUE)
+
+# 2. Prepare bar data preserving full names and abbreviations
+bar_data <- plot_df %>%
+  filter(!is.na(ems_response_min), !is.na(state_name)) %>%
+  mutate(diff_from_median = ems_response_min - med_ems) %>%
+  arrange(desc(ems_response_min)) %>%
+  { bind_rows(head(., 10), tail(., 10)) } %>%
+  mutate(
+    performance_group = if_else(ems_response_min > med_ems, "Delayed EMS (Above Median)", "Fast EMS (Below Median)"),
+    state_label = reorder(state_name, ems_response_min)
+  )
+
+# 3. Render Divergent Bar Chart with Full State Names on Y-axis
+ggplot(bar_data, aes(x = state_label, y = ems_response_min, fill = performance_group)) +
+  geom_col(width = 0.65, alpha = 0.9, show.legend = TRUE) +
+  geom_text(
+    aes(label = paste0(round(ems_response_min, 1), "m")), 
+    hjust = -0.2, 
+    size = 3, 
+    fontface = "bold", 
+    color = "#333333"
+  ) +
+  coord_flip() +
+  scale_fill_manual(values = c("Delayed EMS (Above Median)" = "#d95f02", "Fast EMS (Below Median)" = "#2b8cbe")) +
+  scale_y_continuous(limits = c(0, max(bar_data$ems_response_min, na.rm = TRUE) * 1.15)) +
+  labs(
+    title = "Healthcare Pillar: Extreme State Variations in EMS Response Times (2024)",
+    subtitle = "Comparing the 10 slowest and 10 fastest states relative to national benchmarks.",
+    x = NULL,
+    y = "Mean EMS Response Time (Minutes)",
+    fill = "Performance Tier",
+    caption = "Source: FARS State Summary Data"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, color = "#555555", margin = margin(bottom = 15)),
+    axis.text.y = element_text(face = "bold", size = 10),
+    axis.title.x = element_text(face = "bold", size = 11, margin = margin(top = 10)),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold", size = 10),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r  warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6, fig.align = "center"}
+library(tidyverse)
+library(viridis)
+library(scales)
+
+# 1. Safely build plot_df and map the seatbelt law column from state_master_2024.csv
+plot_df <- state_data_clean %>%
+  select(
+    state_name   = 1,
+    population   = 2,
+    total_deaths = total_deaths,
+    seatbelt_raw = Seatbelt_lae
+  ) %>%
+  mutate(
+    fatality_rate_per_100k = (total_deaths / population) * 100000,
+    seatbelt_category = if_else(is.na(seatbelt_raw), "Unspecified / Other", as.character(seatbelt_raw)),
+    seatbelt_category = str_to_title(seatbelt_category)
+  )
+
+# 2. Group by seatbelt enforcement categories
+policy_summary <- plot_df %>%
+  group_by(seatbelt_category) %>%
+  summarise(
+    mean_rate = mean(fatality_rate_per_100k, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 3. Render chart showing all distinct policy groups
+ggplot(policy_summary, aes(x = reorder(seatbelt_category, mean_rate), y = mean_rate, fill = seatbelt_category)) +
+  geom_col(width = 0.5, show.legend = FALSE, alpha = 0.9) +
+  geom_text(
+    aes(label = paste0(sprintf("%.1f", mean_rate), "")), 
+    vjust = -0.5, 
+    fontface = "bold", 
+    size = 3.5, 
+    color = "#222222"
+  ) +
+  scale_fill_viridis_d(option = "plasma", begin = 0.3, end = 0.8) +
+  scale_y_continuous(limits = c(0, max(policy_summary$mean_rate, na.rm = TRUE) * 1.25)) +
+  labs(
+    title = "Policy Pillar: Impact of Seatbelt Enforcement Standards (2024)",
+    subtitle = "Comparing average state traffic fatality rates across all legislative enforcement categories.",
+    x = "Seatbelt Enforcement Standard",
+    y = "Mean Fatalities per 100k Population",
+    caption = "Source: FARS State Summary Data"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, color = "#555555", margin = margin(bottom = 15)),
+    axis.title.x = element_text(face = "bold", size = 11, margin = margin(top = 10)),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold", size = 10, color = "#222222"),
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  )
+```
+
+------------------------------------------------------------------------
+
+```{r warning = FALSE, message = FALSE, fig.width = 11, fig.height = 7, fig.align = "center"}
+library(tidyverse)
+library(scales)
+
+# 1. Safely build plot_df using state_master_data and the exact column name
+plot_df <- state_data_raw %>%
+  select(
+    state_name           = 1,
+    population           = 2,
+    total_deaths         = total_deaths,
+    rural_fatality_share = share_of_crash_deaths_that_occurred_on_rural_roads
+  ) %>%
+  mutate(
+    fatality_rate_per_100k = (total_deaths / population) * 100000,
+    state_name           = str_to_title(str_trim(state_name)),
+    state_abbr           = state.abb[match(tolower(state_name), tolower(state.name))]
+  )
+
+# 2. Your exact chart code (unchanged)
+ggplot(plot_df %>% filter(!is.na(rural_fatality_share), !is.na(fatality_rate_per_100k)), 
+       aes(x = rural_fatality_share, y = fatality_rate_per_100k)) +
+  # Trendline
+  geom_smooth(method = "lm", se = TRUE, color = "#2b2b2b", linetype = "dashed", linewidth = 0.8) +
+  # Adjusted circle size to house state abbreviations cleanly
+  geom_point(color = "#4a408f", fill = "#8da0cb", shape = 21, size = 5.5, stroke = 0.9, alpha = 0.9) +
+  # State abbreviation inside the circle
+  geom_text(
+    aes(label = state_abbr), 
+    size = 2.4, 
+    fontface = "bold", 
+    color = "#111111"
+  ) +
+  # Exact values displayed next to the point (Rural %, Rate per 100k)
+  geom_text(
+    aes(label = paste0("(", round(rural_fatality_share, 1), "%, ", round(fatality_rate_per_100k, 1), ")")), 
+    size = 2.2, 
+    color = "#333333",
+    vjust = -1.6,
+    hjust = 0.5,
+    check_overlap = TRUE
+  ) +
+  labs(
+    title = "Infrastructure Pillar: Rural Road Share vs. Crash Mortality (2024)",
+    subtitle = "Showing state abbreviation inside markers and exact data values (Rural %, Fatality Rate per 100k).",
+    x = "Rural Fatality Share (%)",
+    y = "Traffic Fatalities per 100k Population",
+    caption = "Source: FARS State Summary Data"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, color = "#555555", margin = margin(bottom = 15)),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  )
+```
+
+------------------------------------------------------------------------
+
+## Conclusion & Policy Recommendations
+
+- Mitigating these disparities requires moving beyond traditional enforcement toward systemic changes, prioritizing safer road geometries, lower speed limits in densely populated areas, and data-driven public safety campaigns.
+
+- By understanding where and why these fatalities are concentrated, policymakers and urban planners can better target interventions to save lives.
